@@ -1,4 +1,6 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 
 void main() {
   runApp(const MyApp());
@@ -7,116 +9,288 @@ void main() {
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
 
-  // This widget is the root of your application.
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Flutter Demo',
+      title: 'Inventory Counter',
       theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // TRY THIS: Try running your application with "flutter run". You'll see
-        // the application has a purple toolbar. Then, without quitting the app,
-        // try changing the seedColor in the colorScheme below to Colors.green
-        // and then invoke "hot reload" (save your changes or press the "hot
-        // reload" button in a Flutter-supported IDE, or press "r" if you used
-        // the command line to start the app).
-        //
-        // Notice that the counter didn't reset back to zero; the application
-        // state is not lost during the reload. To reset the state, use hot
-        // restart instead.
-        //
-        // This works for code too, not just values: Most code changes can be
-        // tested with just a hot reload.
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.teal),
+        useMaterial3: true,
       ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
+      home: const InventoryPage(),
     );
   }
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
+class InventoryItem {
+  final int id;
+  final String name;
+  final double price;
+  int stock;
+  final String category;
 
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
+  InventoryItem({
+    required this.id,
+    required this.name,
+    required this.stock,
+    required this.price,
+    required this.category
+  });
 
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
-  final String title;
-
-  @override
-  State<MyHomePage> createState() => _MyHomePageState();
+  factory InventoryItem.fromJson(Map<String, dynamic> json) {
+    return InventoryItem(
+      id: json['id'] as int,
+      price: json['price'] as double,
+      name: json['name'] as String,
+      stock: json['stock'] as int,
+      category: json['category'] as String,
+    );
+  }
 }
 
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
+class InventoryPage extends StatefulWidget {
+  const InventoryPage({super.key});
 
-  void _incrementCounter() {
+  @override
+  State<InventoryPage> createState() => _InventoryPageState();
+}
+
+class _InventoryPageState extends State<InventoryPage> {
+  final String baseUrl = 'http://127.0.0.1:8000/';
+  bool _loading = false;
+  bool _initialLoaded = false;
+  String? _error;
+  List<InventoryItem> _items = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchItems();
+  }
+
+  Future<void> _fetchItems() async {
     setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
+      _loading = true;
+      _error = null;
     });
+
+    try {
+      final response = await http.get(Uri.parse('$baseUrl/api/products'));
+      if (response.statusCode == 200) {
+        final List<dynamic> data = jsonDecode(response.body);
+        final items = data.map((e) => InventoryItem.fromJson(e)).toList();
+        setState(() {
+          _items = items;
+          _initialLoaded = true;
+        });
+      } else {
+        setState(() {
+          _error = 'Failed to load items (${response.statusCode})';
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _error = 'Could not connect to server';
+      });
+    } finally {
+      setState(() {
+        _loading = false;
+      });
+    }
+  }
+
+  Future<void> _updateQuantity(InventoryItem item, int delta) async {
+    final newQuantity = item.stock + delta;
+    if (newQuantity < 0) return;
+
+    final oldQuantity = item.stock;
+    setState(() {
+      item.stock = newQuantity; // optimistic update
+    });
+
+    try {
+      final response = await http.patch(
+        Uri.parse('$baseUrl/api/products/${item.id}/'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'stock': newQuantity}),
+      );
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        // revert on failure
+        setState(() {
+          item.stock = oldQuantity;
+        });
+        _showSnackBar('Failed to update quantity');
+      }
+    } catch (e) {
+      setState(() {
+        item.stock = oldQuantity;
+      });
+      _showSnackBar('Network error while updating');
+    }
+  }
+
+  Future<void> _createItem(String name, int quantity) async {
+    try {
+      final response = await http.post(
+        Uri.parse('$baseUrl/api/products/'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'name': name,
+          'quantity': quantity,
+        }),
+      );
+      if (response.statusCode == 201 || response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final newItem = InventoryItem.fromJson(data);
+        setState(() {
+          _items.add(newItem);
+        });
+        _showSnackBar('Item added');
+      } else {
+        _showSnackBar('Failed to add item');
+      }
+    } catch (e) {
+      _showSnackBar('Network error while adding item');
+    }
+  }
+
+  void _showSnackBar(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
+  }
+
+  void _openAddItemDialog() {
+    final nameController = TextEditingController();
+    final quantityController = TextEditingController(text: '0');
+
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Add Inventory Item'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: nameController,
+                decoration: const InputDecoration(
+                  labelText: 'Item name',
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: quantityController,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: 'Initial quantity',
+
+                ),
+              ),
+              TextField(
+                controller:
+              )
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final name = nameController.text.trim();
+                final q = int.tryParse(quantityController.text) ?? 0;
+                if (name.isEmpty) {
+                  _showSnackBar('Name is required');
+                  return;
+                }
+                Navigator.of(context).pop();
+                _createItem(name, q);
+              },
+              child: const Text('Add'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildBody() {
+    if (_loading && !_initialLoaded) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    if (_error != null && !_initialLoaded) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(_error!, style: const TextStyle(color: Colors.red)),
+            const SizedBox(height: 8),
+            ElevatedButton(
+              onPressed: _fetchItems,
+              child: const Text('Retry'),
+            ),
+          ],
+        ),
+      );
+    }
+
+    if (_items.isEmpty) {
+      return RefreshIndicator(
+        onRefresh: _fetchItems,
+        child: ListView(
+          children: const [
+            SizedBox(height: 100),
+            Center(child: Text('No items yet. Tap + to add one.')),
+          ],
+        ),
+      );
+    }
+
+    return RefreshIndicator(
+      onRefresh: _fetchItems,
+      child: ListView.separated(
+        physics: const AlwaysScrollableScrollPhysics(),
+        itemCount: _items.length,
+        separatorBuilder: (_, __) => const Divider(height: 1),
+        itemBuilder: (context, index) {
+          final item = _items[index];
+          return ListTile(
+            title: Text(item.name),
+            subtitle: Text('Quantity: ${item.stock}'),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.remove_circle_outline),
+                  onPressed: () => _updateQuantity(item, -1),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.add_circle_outline),
+                  onPressed: () => _updateQuantity(item, 1),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
     return Scaffold(
       appBar: AppBar(
-        // TRY THIS: Try changing the color here to a specific color (to
-        // Colors.amber, perhaps?) and trigger a hot reload to see the AppBar
-        // change color while the other colors stay the same.
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
+        title: const Text('Inventory Counter'),
       ),
-      body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
-        child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          //
-          // TRY THIS: Invoke "debug painting" (choose the "Toggle Debug Paint"
-          // action in the IDE, or press "p" in the console), to see the
-          // wireframe for each widget.
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
-            const Text('You have pushed the button this many times:'),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
-            ),
-          ],
-        ),
-      ),
+      body: _buildBody(),
       floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
+        onPressed: _openAddItemDialog,
         child: const Icon(Icons.add),
-      ), // This trailing comma makes auto-formatting nicer for build methods.
+      ),
     );
   }
 }
