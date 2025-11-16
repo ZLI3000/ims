@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="ProjectModuleManager">
+    <modules>
+      <module fileurl="file://$PROJECT_DIR$/imsBackend.iml" filepath="$PROJECT_DIR$/imsBackend.iml" />
+      <module fileurl="file://$PROJECT_DIR$/imsflutter/imsflutter.iml" filepath="$PROJECT_DIR$/imsflutter/imsflutter.iml" />
+    </modules>
+  </component>
+</project>
